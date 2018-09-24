@@ -114,7 +114,14 @@ cdef extern from  "libuvc/libuvc.h":
         UVC_FRAME_FORMAT_BGR
         UVC_FRAME_FORMAT_MJPEG
         UVC_FRAME_FORMAT_GRAY8
-        UVC_FRAME_FORMAT_BY8
+        UVC_FRAME_FORMAT_GRAY16,
+        UVC_FRAME_FORMAT_BY8,
+        UVC_FRAME_FORMAT_BA81,
+        UVC_FRAME_FORMAT_SGRBG8,
+        UVC_FRAME_FORMAT_SGBRG8,
+        UVC_FRAME_FORMAT_SRGGB8,
+        UVC_FRAME_FORMAT_SBGGR8,
+        UVC_FRAME_FORMAT_H264,
         UVC_FRAME_FORMAT_COUNT
 
     enum:
@@ -144,6 +151,8 @@ cdef extern from  "libuvc/libuvc.h":
         UVC_VS_FORMAT_FRAME_BASED = 0x10
         UVC_VS_FRAME_FRAME_BASED = 0x11
         UVC_VS_FORMAT_STREAM_BASED = 0x12
+        UVC_VS_FORMAT_H264 = 0x13
+        UVC_VS_FRAME_H264 = 0x14
 
     cdef struct uvc_frame_desc:
         uvc_format_desc *parent
@@ -195,6 +204,29 @@ cdef extern from  "libuvc/libuvc.h":
 
     ctypedef uvc_format_desc uvc_format_desc_t
 
+#   typedef struct uvc_streaming_interface {
+#  struct uvc_device_info *parent;
+#  struct uvc_streaming_interface *prev, *next;
+#  /** Interface number */
+#  uint8_t bInterfaceNumber;
+#  /** Video formats that this interface provides */
+#  struct uvc_format_desc *format_descs;
+#  /** USB endpoint to use when communicating with this interface */
+#  uint8_t bEndpointAddress;
+#  uint8_t bTerminalLink;
+#} uvc_streaming_interface_t;
+
+
+    cdef struct uvc_streaming_interface:
+        #parent
+        uvc_streaming_interface *prev
+        uvc_streaming_interface *next
+        uint8_t bInterfaceNumber
+        uvc_format_desc *format_descs
+        uint8_t bEndpointAddress
+        uint8_t bTerminalLink
+
+    ctypedef uvc_streaming_interface uvc_streaming_interface_t
 
     cdef enum uvc_req_code:
         UVC_RC_UNDEFINED = 0x00
@@ -395,6 +427,8 @@ cdef extern from  "libuvc/libuvc.h":
     uvc_error_t uvc_get_stream_ctrl_format_size( uvc_device_handle_t *devh, uvc_stream_ctrl_t *ctrl, uvc_frame_format format, int width, int height, int fps)
 
     uvc_format_desc_t *uvc_get_format_descs(uvc_device_handle_t* )
+
+    uvc_streaming_interface_t *uvc_get_streaming_ifs(uvc_device_handle_t *)
 
     uvc_error_t uvc_probe_stream_ctrl( uvc_device_handle_t *devh, uvc_stream_ctrl_t *ctrl)
 

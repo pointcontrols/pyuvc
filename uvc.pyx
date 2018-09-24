@@ -16,6 +16,8 @@ cimport numpy as np
 import numpy as np
 from cuvc cimport uvc_frame_t, timeval
 
+import av
+
 IF UNAME_SYSNAME == "Windows":
     include "windows_time.pxi"
 ELIF UNAME_SYSNAME == "Darwin":
@@ -41,6 +43,10 @@ uvc_error_codes = {  0:"Success (no error)",
                     -52:"Resource has a callback (can't use polling and async)",
                     -99:"Undefined error."}
 
+
+cpdef enum uvc_subsampling:
+    YUV_422 = turbojpeg.TJSAMP_422
+    YUV_420 = turbojpeg.TJSAMP_420
 
 cdef str _to_str(object s):
     if type(s) is str:
@@ -430,6 +436,9 @@ cdef class Capture:
     cdef list _available_modes
     cdef dict _info
     cdef public list controls
+    cdef av.Codec codec
+    cdef av.CodecContext codec_context
+    cdef list decoded_frames
 
     def __cinit__(self,dev_uid):
         self.dev = NULL
@@ -443,6 +452,9 @@ cdef class Capture:
         self._info = {}
         self.controls = []
         self._bandwidth_factor = 2.0
+        self.codec = Codec('h264', 'r')
+        self.codec_context = self.codec.create()
+        self.decoded_frames = []
 
     def __init__(self,dev_uid):
 
@@ -527,7 +539,7 @@ cdef class Capture:
             self._stop()
 
         status = uvc.uvc_get_stream_ctrl_format_size( self.devh, &self.ctrl,
-                                                      uvc.UVC_FRAME_FORMAT_COMPRESSED,
+                                                      uvc.UVC_FRAME_FORMAT_H264,
                                                       mode[0],mode[1],mode[2] )
         if status != uvc.UVC_SUCCESS:
             raise InitError("Can't get stream control: Error:'%s'."%uvc_error_codes[status])
@@ -582,22 +594,42 @@ cdef class Capture:
 
 
     def get_frame(self,timeout=0):
+        #test
+        timeout = 0
+
         cdef int status, j_width,j_height,jpegSubsamp,header_ok
         cdef int  timeout_usec = int(timeout*1e6) #sec to usec
         if not self._stream_on:
             self._start()
         cdef uvc.uvc_frame *uvc_frame = NULL
-        #when this is called we will overwrite the last jpeg buffer! This can be dangerous!
-        with nogil:
-            status = uvc.uvc_stream_get_frame(self.strmh,&uvc_frame,timeout_usec)
-        if status !=uvc.UVC_SUCCESS:
-            raise StreamError(uvc_error_codes[status])
-        if uvc_frame is NULL:
-            raise StreamError("Frame pointer is NULL")
-        ##check jpeg header
-        header_ok = turbojpeg.tjDecompressHeader2(self.tj_context,  <unsigned char *>uvc_frame.data, uvc_frame.data_bytes, &j_width, &j_height, &jpegSubsamp)
-        if not (header_ok >=0 and uvc_frame.width == j_width and uvc_frame.height == j_height):
-            raise StreamError("JPEG header corrupt.")
+        cdef av.Packet packet = av.Packet()
+        cdef list dec_frames
+        if len(self.decoded_frames) > 0:
+            uvc_frame
+            cdef Frame out_frame = Frame()
+            out_frame.tj_context = None
+            out_frame.attach_uvcframe(uvc_frame = uvc_frame,copy=True)
+            out_frame.timestamp = uvc_frame.capture_time.tv_sec + <double>uvc_frame.capture_time.tv_usec * 1e-6
+
+        while True:
+            #when this is called we will overwrite the last jpeg buffer! This can be dangerous!
+            with nogil:
+                status = uvc.uvc_stream_get_frame(self.strmh,&uvc_frame,timeout_usec)
+            if status !=uvc.UVC_SUCCESS:
+                raise StreamError(uvc_error_codes[status])
+            if uvc_frame is NULL:
+                raise StreamError("Frame pointer is NULL")
+            print("Got uvc frame!")
+            packet.payload = uvc_frame.data
+            dec_frames = self.codec_context.decode(packet)
+            if dec_frame is not None:
+
+
+            ##check jpeg header
+            #header_ok = turbojpeg.tjDecompressHeader2(self.tj_context,  <unsigned char *>uvc_frame.data, uvc_frame.data_bytes, &j_width, &j_height, &jpegSubsamp)
+            #print("header_ok = {}".format(header_ok))
+            #if not (header_ok >=0 and uvc_frame.width == j_width and uvc_frame.height == j_height):
+        #    raise StreamError("JPEG header corrupt.")
 
         cdef Frame out_frame = Frame()
         out_frame.tj_context = self.tj_context
@@ -654,29 +686,37 @@ cdef class Capture:
 
 
     cdef _enumerate_formats(self):
-        cdef uvc.uvc_format_desc_t *format_desc = uvc.uvc_get_format_descs(self.devh)
+        cdef uvc.uvc_streaming_interface_t *streaming_if = uvc.uvc_get_streaming_ifs(self.devh)
+        cdef uvc.uvc_format_desc_t *format_desc
         cdef uvc.uvc_frame_desc *frame_desc
         cdef int i
-        self._available_modes = []
-        while format_desc is not NULL:
-            frame_desc = format_desc.frame_descs
-            while frame_desc is not NULL:
-                if frame_desc.bDescriptorSubtype == uvc.UVC_VS_FRAME_MJPEG:
-                    frame_index = frame_desc.bFrameIndex
-                    width,height = frame_desc.wWidth,frame_desc.wHeight
-                    mode = {'size':(width,height),'rates':[]}
-                    i = 0
-                    while frame_desc.intervals[i]:
-                        mode['rates'].append(interval_to_fps(frame_desc.intervals[i]) )
-                        i+=1
-                    self._available_modes.append(mode)
+        while streaming_if is not NULL:
+            format_desc = streaming_if.format_descs
+            self._available_modes = []
+            while format_desc is not NULL:
+                print("format desc subtype = {}".format(<int>format_desc.bDescriptorSubtype))
+                frame_desc = format_desc.frame_descs
+                while frame_desc is not NULL:
+                    if frame_desc.bDescriptorSubtype == uvc.UVC_VS_FRAME_MJPEG or frame_desc.bDescriptorSubtype == uvc.UVC_VS_FRAME_FRAME_BASED:
+                        frame_index = frame_desc.bFrameIndex
+                        width,height = frame_desc.wWidth,frame_desc.wHeight
+                        mode = {'size':(width,height),'rates':[]}
+                        if frame_desc.bDescriptorSubtype == uvc.UVC_VS_FRAME_FRAME_BASED:
+                            print("H264 mode!")
 
-                #go to next frame_desc
-                frame_desc = frame_desc.next
+                        i = 0
+                        while frame_desc.intervals[i]:
+                            mode['rates'].append(interval_to_fps(frame_desc.intervals[i]) )
+                            i+=1
+                        self._available_modes.append(mode)
 
-            #go to next format_desc
-            format_desc = format_desc.next
+                    #go to next frame_desc
+                    frame_desc = frame_desc.next
 
+                #go to next format_desc
+                format_desc = format_desc.next
+
+            streaming_if = streaming_if.next
         logger.debug('avaible video modes: %s'%self._available_modes)
 
     def __str__(self):
