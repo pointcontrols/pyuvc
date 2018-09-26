@@ -16,7 +16,8 @@ cimport numpy as np
 import numpy as np
 from cuvc cimport uvc_frame_t, timeval
 
-import av
+from av.packet import Packet
+from av.codec.codec import Codec
 
 IF UNAME_SYSNAME == "Windows":
     include "windows_time.pxi"
@@ -42,6 +43,15 @@ uvc_error_codes = {  0:"Success (no error)",
                     -51:"Mode not supported.",
                     -52:"Resource has a callback (can't use polling and async)",
                     -99:"Undefined error."}
+
+cdef dict _str_to_fmt_map = {'MJPEG': uvc.UVC_VS_FRAME_MJPEG ,
+                             'H264':  uvc.UVC_VS_FRAME_FRAME_BASED}
+
+cdef int _str_to_fmt(str fmt_str):
+    return _str_to_fmt_map[str]
+
+cdef str _fmt_to_str(int fmt):
+    return next(key for key, value in dd.items() if value == fmt')
 
 
 cpdef enum uvc_subsampling:
@@ -83,6 +93,57 @@ import logging
 logger = logging.getLogger(__name__)
 
 __version__ = '0.13' #make sure this is the same in setup.py
+
+cdef class AvFrame:
+    cdef object _av_frame
+    cdef object _av_packet
+    cdef public double timestamp
+
+
+    def __cinit__(self):
+        self._av_frame = None
+        self._av_packet = None
+    def __init__(self):
+        pass
+
+    cdef attach_avframe(self, av_frame):
+        self._av_frame = av_frame
+
+    property yuv_subsampling:
+        def __get__(self):
+            if self._av_frame.format.name == 'yuv420p':
+                return YUV_420
+            elif self._av_frame.format.name == 'yuv422p':
+                 return YUV_422
+    property width:
+        def __get__(self):
+            return self._av_frame.width
+
+    property height:
+        def __get__(self):
+            return self._av_frame.height
+
+    property index:
+        def __get__(self):
+            return self._av_frame.index
+
+    property yuv_buffer:
+        def __get__(self):
+            if self._av_frame.format.name == 'yuv420p':
+                #print("Y plane w {} h {} buf_size {}".format(self._av_frame.planes[0].width,
+                #                                            self._av_frame.planes[0].height,
+                #                                            self._av_frame.planes[0].buffer_size))
+                #y = np.frombuffer(self._av_frame.planes[0],)
+                #u = np.frombuffer(self._av_frame.planes[1])
+                #v = np.frombuffer(self._av_frame.planes[2])
+                #print("y shape = {} u shape = {} v shape = {} ".format(y.shape, u.shape, v.shape))
+                #buf = np.concatenate((y,u,v))
+                #print("buf shape = {}".format(buf.shape))
+
+                return np.concatenate((np.frombuffer(self._av_frame.planes[0],dtype=np.uint8),
+                                      np.frombuffer(self._av_frame.planes[1], dtype=np.uint8),
+                                      np.frombuffer(self._av_frame.planes[2], dtype=np.uint8)))
+
 
 
 cdef class Frame:
@@ -436,9 +497,11 @@ cdef class Capture:
     cdef list _available_modes
     cdef dict _info
     cdef public list controls
-    cdef av.Codec codec
-    cdef av.CodecContext codec_context
+    cdef object codec
+    cdef object codec_context
     cdef list decoded_frames
+
+
 
     def __cinit__(self,dev_uid):
         self.dev = NULL
@@ -602,14 +665,15 @@ cdef class Capture:
         if not self._stream_on:
             self._start()
         cdef uvc.uvc_frame *uvc_frame = NULL
-        cdef av.Packet packet = av.Packet()
+        packet = Packet()
         cdef list dec_frames
-        if len(self.decoded_frames) > 0:
-            uvc_frame
-            cdef Frame out_frame = Frame()
-            out_frame.tj_context = None
-            out_frame.attach_uvcframe(uvc_frame = uvc_frame,copy=True)
-            out_frame.timestamp = uvc_frame.capture_time.tv_sec + <double>uvc_frame.capture_time.tv_usec * 1e-6
+        #cdef Frame out_frame = Frame()
+        #if len(self.decoded_frames) > 0:
+        #    uvc_frame
+        #    cdef Frame out_frame = Frame()
+        #    out_frame.tj_context = None
+        #    out_frame.attach_uvcframe(uvc_frame = uvc_frame,copy=True)
+        #    out_frame.timestamp = uvc_frame.capture_time.tv_sec + <double>uvc_frame.capture_time.tv_usec * 1e-6
 
         while True:
             #when this is called we will overwrite the last jpeg buffer! This can be dangerous!
@@ -619,10 +683,18 @@ cdef class Capture:
                 raise StreamError(uvc_error_codes[status])
             if uvc_frame is NULL:
                 raise StreamError("Frame pointer is NULL")
-            print("Got uvc frame!")
-            packet.payload = uvc_frame.data
+            #print("Got uvc frame!")
+            packet.set_payload_ptr(<unsigned long>uvc_frame.data, uvc_frame.data_bytes)
             dec_frames = self.codec_context.decode(packet)
-            if dec_frame is not None:
+            if len(dec_frames) > 0:
+                av_frame = dec_frames.pop()
+                #print("Av frame is {}".format(av_frame))
+                break
+
+
+
+
+
 
 
             ##check jpeg header
@@ -631,10 +703,15 @@ cdef class Capture:
             #if not (header_ok >=0 and uvc_frame.width == j_width and uvc_frame.height == j_height):
         #    raise StreamError("JPEG header corrupt.")
 
-        cdef Frame out_frame = Frame()
-        out_frame.tj_context = self.tj_context
-        out_frame.attach_uvcframe(uvc_frame = uvc_frame,copy=True)
+        #cdef Frame out_frame = Frame()
+        #out_frame.tj_context = self.tj_context
+        #out_frame.attach_uvcframe(uvc_frame = uvc_frame,copy=True)
+        #out_frame.timestamp = uvc_frame.capture_time.tv_sec + <double>uvc_frame.capture_time.tv_usec * 1e-6
+        cdef AvFrame out_frame = AvFrame()
+        out_frame.attach_avframe(av_frame)
         out_frame.timestamp = uvc_frame.capture_time.tv_sec + <double>uvc_frame.capture_time.tv_usec * 1e-6
+
+
         return out_frame
 
 
@@ -700,7 +777,7 @@ cdef class Capture:
                     if frame_desc.bDescriptorSubtype == uvc.UVC_VS_FRAME_MJPEG or frame_desc.bDescriptorSubtype == uvc.UVC_VS_FRAME_FRAME_BASED:
                         frame_index = frame_desc.bFrameIndex
                         width,height = frame_desc.wWidth,frame_desc.wHeight
-                        mode = {'size':(width,height),'rates':[]}
+                        mode = {'size':(width,height),'rates':[], 'format' : _fmt_to_str(frame_desc.bDescriptorSubtype)}
                         if frame_desc.bDescriptorSubtype == uvc.UVC_VS_FRAME_FRAME_BASED:
                             print("H264 mode!")
 
