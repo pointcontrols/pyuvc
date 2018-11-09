@@ -19,6 +19,9 @@ from cuvc cimport uvc_frame_t, timeval
 from av.packet import Packet
 from av.codec.codec import Codec
 
+
+from time import monotonic
+
 IF UNAME_SYSNAME == "Windows":
     include "windows_time.pxi"
 ELIF UNAME_SYSNAME == "Darwin":
@@ -44,14 +47,19 @@ uvc_error_codes = {  0:"Success (no error)",
                     -52:"Resource has a callback (can't use polling and async)",
                     -99:"Undefined error."}
 
-cdef dict _str_to_fmt_map = {'MJPEG': uvc.UVC_VS_FRAME_MJPEG ,
-                             'H264':  uvc.UVC_VS_FRAME_FRAME_BASED}
+cdef dict _str_to_fmt_map = {'MJPEG': uvc.UVC_FRAME_FORMAT_MJPEG ,
+                             'H264':  uvc.UVC_FRAME_FORMAT_H264}
 
-cdef int _str_to_fmt(str fmt_str):
-    return _str_to_fmt_map[str]
+cdef dict _vsfmt_to_str_map = {uvc.UVC_VS_FRAME_MJPEG       : 'MJPEG',
+                               uvc.UVC_VS_FRAME_FRAME_BASED : 'H264'}
+
+cdef uvc.uvc_frame_format _str_to_fmt(str fmt_str) except *:
+    return _str_to_fmt_map[fmt_str]
 
 cdef str _fmt_to_str(int fmt):
-    return next(key for key, value in dd.items() if value == fmt')
+    return _vsfmt_to_str_map[fmt]
+
+    #return next(key for key, value in _str_to_fmt_map.items() if value == fmt)
 
 
 cpdef enum uvc_subsampling:
@@ -94,27 +102,174 @@ logger = logging.getLogger(__name__)
 
 __version__ = '0.13' #make sure this is the same in setup.py
 
-cdef class AvFrame:
+
+cdef class Frame:
+    cdef:
+        str encoding
+        str col_fmt
+        object subsampling
+        bint _bgr_converted
+        uvc.uvc_frame * _uvc_frame
+
+    def __cinit__(self):
+        pass
+
+    def __init__(self, encoding='MJPEG', col_fmt='YUV', subsampling = (4,2,2)):
+        self.encoding =encoding
+        self.subsampling = subsampling
+        pass
+
+    cdef attach_uvcframe(self,uvc.uvc_frame *uvc_frame,copy=True):
+        pass
+
+    cdef yuv2bgr(self):
+        pass
+    property width:
+        def __get__(self):
+            pass
+
+    property height:
+        def __get__(self):
+            pass
+
+    property index:
+        def __get__(self):
+            pass
+
+    property raw_buffer:
+        def __get__(self):
+            pass
+
+    property yuv_buffer:
+        def __get__(self):
+            pass
+
+    property yuv420:
+        def __get__(self):
+            '''
+            planar YUV420 returned in 3 numpy arrays:
+            420 subsampling:
+                Y(height,width) U(height/2,width/2), V(height/2,width/2)
+            '''
+            cdef np.ndarray[np.uint8_t, ndim=2] Y,U,V
+            y_plane_len = self.width*self.height
+            Y = np.asarray(self._yuv_buffer[:y_plane_len]).reshape(self.height,self.width)
+
+            if self.subsampling == (4,2,2):
+                uv_plane_len = y_plane_len//2
+                offset = y_plane_len
+                U = np.asarray(self._yuv_buffer[offset:offset+uv_plane_len]).reshape(self.height,self.width/2)
+                offset += uv_plane_len
+                V = np.asarray(self._yuv_buffer[offset:offset+uv_plane_len]).reshape(self.height,self.width/2)
+                #hack solution to go from YUV422 to YUV420
+                U = U[::2,:]
+                V = V[::2,:]
+            elif self.subsampling == (4,2,0):
+                uv_plane_len = y_plane_len//4
+                offset = y_plane_len
+                U = np.asarray(self._yuv_buffer[offset:offset+uv_plane_len]).reshape(self.height/2,self.width/2)
+                offset += uv_plane_len
+                V = np.asarray(self._yuv_buffer[offset:offset+uv_plane_len]).reshape(self.height/2,self.width/2)
+            elif self.subsampling == (4,4,4):
+                uv_plane_len = y_plane_len
+                offset = y_plane_len
+                U = np.asarray(self._yuv_buffer[offset:offset+uv_plane_len]).reshape(self.height,self.width)
+                offset += uv_plane_len
+                V = np.asarray(self._yuv_buffer[offset:offset+uv_plane_len]).reshape(self.height,self.width)
+                #hack solution to go from YUV444 to YUV420
+                U = U[::2,::2]
+                V = V[::2,::2]
+            return Y,U,V
+
+    property yuv422:
+        def __get__(self):
+            '''
+            planar YUV420 returned in 3 numpy arrays:
+            422 subsampling:
+                Y(height,width) U(height,width/2), V(height,width/2)
+            '''
+            cdef np.ndarray[np.uint8_t, ndim=2] Y,U,V
+            y_plane_len = self.width*self.height
+            Y = np.asarray(self._yuv_buffer[:y_plane_len]).reshape(self.height,self.width)
+
+            if  self.subsampling == (4,2,2):
+                uv_plane_len = y_plane_len//2
+                offset = y_plane_len
+                U = np.asarray(self._yuv_buffer[offset:offset+uv_plane_len]).reshape(self.height,self.width//2)
+                offset += uv_plane_len
+                V = np.asarray(self._yuv_buffer[offset:offset+uv_plane_len]).reshape(self.height,self.width//2)
+            elif  self.subsampling == (4,2,0):
+                raise Exception("can not convert from YUV420 to YUV422")
+            elif self.subsampling == (4,4,4):
+                uv_plane_len = y_plane_len
+                offset = y_plane_len
+                U = np.asarray(self._yuv_buffer[offset:offset+uv_plane_len]).reshape(self.height,self.width)
+                offset += uv_plane_len
+                V = np.asarray(self._yuv_buffer[offset:offset+uv_plane_len]).reshape(self.height,self.width)
+                #hack solution to go from YUV444 to YUV420
+                U = U[:,::2]
+                V = V[:,::2]
+            return Y,U,V
+
+
+    property gray:
+        def __get__(self):
+            # return gray aka luminace plane of YUV image.
+            cdef np.ndarray[np.uint8_t, ndim=2] Y
+            Y = np.asarray(self._yuv_buffer[:self.width*self.height]).reshape(self.height,self.width)
+            return Y
+
+
+    property bgr:
+        def __get__(self):
+            if self._bgr_converted is False:
+                self.yuv2bgr()
+
+            cdef np.ndarray[np.uint8_t, ndim=3] BGR
+            BGR = np.asarray(self._bgr_buffer).reshape(self.height,self.width,3)
+            return BGR
+
+
+    #for legacy reasons.
+    property img:
+        def __get__(self):
+            return self.bgr
+
+cdef class AvFrame(Frame):
     cdef object _av_frame
     cdef object _av_packet
     cdef public double timestamp
-
+    cdef dict _av_to_ss_map
+    cdef bint owns_uvc_frame
 
     def __cinit__(self):
         self._av_frame = None
         self._av_packet = None
-    def __init__(self):
-        pass
+        self._av_to_ss_map = {'yuv420p' : (4,2,0),
+                               'yuv422p' : (4,2,2)}
+
+    def __init__(self, unsigned long uvc_frame, av_frame):
+        super().__init__('H264','YUV')
+        self._av_frame = av_frame
+        self._uvc_frame = <uvc.uvc_frame *> uvc_frame
+        self.owns_uvc_frame = True
+
+    def __dealloc__(self):
+        if self.owns_uvc_frame:
+            uvc.uvc_free_frame(self._uvc_frame)
 
     cdef attach_avframe(self, av_frame):
         self._av_frame = av_frame
 
-    property yuv_subsampling:
+    property subsampling:
         def __get__(self):
-            if self._av_frame.format.name == 'yuv420p':
-                return YUV_420
-            elif self._av_frame.format.name == 'yuv422p':
-                 return YUV_422
+            return self._av_to_ss_map[self._av_frame.format.name]
+
+        #def __get__(self):
+        #    if self._av_frame.format.name == 'yuv420p':
+        #        return YUV_420
+        #    elif self._av_frame.format.name == 'yuv422p':
+        #         return YUV_422
     property width:
         def __get__(self):
             return self._av_frame.width
@@ -146,7 +301,7 @@ cdef class AvFrame:
 
 
 
-cdef class Frame:
+cdef class TjFrame(Frame):
     '''
     The Frame Object holds image data and image metadata.
 
@@ -166,20 +321,33 @@ cdef class Frame:
     '''
 
     cdef turbojpeg.tjhandle tj_context
-    cdef uvc.uvc_frame * _uvc_frame
+
     cdef unsigned char[:] _bgr_buffer, _gray_buffer,_yuv_buffer #we use numpy for memory management.
-    cdef bint _yuv_converted, _bgr_converted
+    cdef bint _yuv_converted
     cdef public double timestamp
     cdef public yuv_subsampling
     cdef bint owns_uvc_frame
 
+    cdef dict _tj_to_ss_map
+
     def __cinit__(self):
+        #print("Tj frame __cinit__")
         self._yuv_converted = False
         self._bgr_converted = False
         self.tj_context = NULL
+        self._tj_to_ss_map = { turbojpeg.TJSAMP_422: (4,2,2),
+                                turbojpeg.TJSAMP_420: (4,2,0),
+                                turbojpeg.TJSAMP_444: (4,4,4)
+                                }
 
-    def __init__(self):
-        pass
+
+    def __init__(self, unsigned long tj_context):
+        super().__init__('MJPEG','YUV')
+        #print("Tj frame __init__")
+
+        cdef turbojpeg.tjhandle tj_handle =  <turbojpeg.tjhandle > tj_context
+        self.tj_context = tj_handle
+        #print("End of __init__")
 
     cdef attach_uvcframe(self,uvc.uvc_frame *uvc_frame,copy=True):
         if copy:
@@ -193,6 +361,10 @@ cdef class Frame:
     def __dealloc__(self):
         if self.owns_uvc_frame:
             uvc.uvc_free_frame(self._uvc_frame)
+
+    property subsampling:
+        def __get__(self):
+            return self._tj_to_ss_map[self.yuv_subsampling]
 
     property width:
         def __get__(self):
@@ -210,6 +382,9 @@ cdef class Frame:
         def __get__(self):
             cdef np.uint8_t[::1] view = <np.uint8_t[:self._uvc_frame.data_bytes]>self._uvc_frame.data
             return view
+    property raw_buffer:
+        def __get__(self):
+            return self.jpeg_buffer
 
     property yuv_buffer:
         def __get__(self):
@@ -228,35 +403,37 @@ cdef class Frame:
             if self._yuv_converted is False:
                 self.jpeg2yuv()
 
-            cdef np.ndarray[np.uint8_t, ndim=2] Y,U,V
-            y_plane_len = self.width*self.height
-            Y = np.asarray(self._yuv_buffer[:y_plane_len]).reshape(self.height,self.width)
+            return super().yuv420
 
-            if self.yuv_subsampling == turbojpeg.TJSAMP_422:
-                uv_plane_len = y_plane_len//2
-                offset = y_plane_len
-                U = np.asarray(self._yuv_buffer[offset:offset+uv_plane_len]).reshape(self.height,self.width/2)
-                offset += uv_plane_len
-                V = np.asarray(self._yuv_buffer[offset:offset+uv_plane_len]).reshape(self.height,self.width/2)
-                #hack solution to go from YUV422 to YUV420
-                U = U[::2,:]
-                V = V[::2,:]
-            elif self.yuv_subsampling == turbojpeg.TJSAMP_420:
-                uv_plane_len = y_plane_len//4
-                offset = y_plane_len
-                U = np.asarray(self._yuv_buffer[offset:offset+uv_plane_len]).reshape(self.height/2,self.width/2)
-                offset += uv_plane_len
-                V = np.asarray(self._yuv_buffer[offset:offset+uv_plane_len]).reshape(self.height/2,self.width/2)
-            elif self.yuv_subsampling == turbojpeg.TJSAMP_444:
-                uv_plane_len = y_plane_len
-                offset = y_plane_len
-                U = np.asarray(self._yuv_buffer[offset:offset+uv_plane_len]).reshape(self.height,self.width)
-                offset += uv_plane_len
-                V = np.asarray(self._yuv_buffer[offset:offset+uv_plane_len]).reshape(self.height,self.width)
-                #hack solution to go from YUV444 to YUV420
-                U = U[::2,::2]
-                V = V[::2,::2]
-            return Y,U,V
+            #cdef np.ndarray[np.uint8_t, ndim=2] Y,U,V
+            #y_plane_len = self.width*self.height
+            #Y = np.asarray(self._yuv_buffer[:y_plane_len]).reshape(self.height,self.width)
+
+            #if self.yuv_subsampling == turbojpeg.TJSAMP_422:
+            #    uv_plane_len = y_plane_len//2
+            #    offset = y_plane_len
+            #    U = np.asarray(self._yuv_buffer[offset:offset+uv_plane_len]).reshape(self.height,self.width/2)
+            #    offset += uv_plane_len
+            #    V = np.asarray(self._yuv_buffer[offset:offset+uv_plane_len]).reshape(self.height,self.width/2)
+            #    #hack solution to go from YUV422 to YUV420
+            #    U = U[::2,:]
+            #    V = V[::2,:]
+            #elif self.yuv_subsampling == turbojpeg.TJSAMP_420:
+            #    uv_plane_len = y_plane_len//4
+            #    offset = y_plane_len
+            #    U = np.asarray(self._yuv_buffer[offset:offset+uv_plane_len]).reshape(self.height/2,self.width/2)
+            #    offset += uv_plane_len
+            #    V = np.asarray(self._yuv_buffer[offset:offset+uv_plane_len]).reshape(self.height/2,self.width/2)
+            #elif self.yuv_subsampling == turbojpeg.TJSAMP_444:
+            #    uv_plane_len = y_plane_len
+            #    offset = y_plane_len
+            #    U = np.asarray(self._yuv_buffer[offset:offset+uv_plane_len]).reshape(self.height,self.width)
+            #    offset += uv_plane_len
+            #    V = np.asarray(self._yuv_buffer[offset:offset+uv_plane_len]).reshape(self.height,self.width)
+            #    #hack solution to go from YUV444 to YUV420
+            #    U = U[::2,::2]
+            #    V = V[::2,::2]
+            #return Y,U,V
 
     property yuv422:
         def __get__(self):
@@ -500,6 +677,9 @@ cdef class Capture:
     cdef object codec
     cdef object codec_context
     cdef list decoded_frames
+    cdef uvc.uvc_frame * _uvc_frame
+    cdef int num_frames
+    cdef double avg_time
 
 
 
@@ -511,13 +691,16 @@ cdef class Capture:
         self._configured = 0
         self.strmh = NULL
         self._available_modes = []
-        self._active_mode = None,None,None
+        self._active_mode = None,None,None,None
         self._info = {}
         self.controls = []
         self._bandwidth_factor = 2.0
         self.codec = Codec('h264', 'r')
         self.codec_context = self.codec.create()
         self.decoded_frames = []
+        self.num_frames = 0
+        self.avg_time = 0.
+
 
     def __init__(self,dev_uid):
 
@@ -595,19 +778,20 @@ cdef class Capture:
         self._re_init_device()
         self._start()
 
-    cdef _configure_stream(self,mode=(640,480,30)):
+    cdef _configure_stream(self,mode=(640,480,30, 'MJPEG')):
         cdef int status
 
         if self._stream_on:
             self._stop()
 
         status = uvc.uvc_get_stream_ctrl_format_size( self.devh, &self.ctrl,
-                                                      uvc.UVC_FRAME_FORMAT_H264,
+                                                      _str_to_fmt(mode[3]), # uvc.UVC_FRAME_FORMAT_H264,
                                                       mode[0],mode[1],mode[2] )
         if status != uvc.UVC_SUCCESS:
             raise InitError("Can't get stream control: Error:'%s'."%uvc_error_codes[status])
         self._configured = 1
         self._active_mode = mode
+        self.num_frames = 0
 
 
     cdef _start(self):
@@ -658,7 +842,8 @@ cdef class Capture:
 
     def get_frame(self,timeout=0):
         #test
-        timeout = 0
+        #timeout += 0.3
+        #timeout = 3.
 
         cdef int status, j_width,j_height,jpegSubsamp,header_ok
         cdef int  timeout_usec = int(timeout*1e6) #sec to usec
@@ -674,22 +859,63 @@ cdef class Capture:
         #    out_frame.tj_context = None
         #    out_frame.attach_uvcframe(uvc_frame = uvc_frame,copy=True)
         #    out_frame.timestamp = uvc_frame.capture_time.tv_sec + <double>uvc_frame.capture_time.tv_usec * 1e-6
+        cdef Frame out_frame_av
+        cdef Frame out_frame
 
-        while True:
-            #when this is called we will overwrite the last jpeg buffer! This can be dangerous!
+        if self._active_mode[3] == 'H264':
+            timeout = 0
+            while True:
+                #when this is called we will overwrite the last jpeg buffer! This can be dangerous!
+                with nogil:
+                    status = uvc.uvc_stream_get_frame(self.strmh,&uvc_frame,timeout_usec)
+                #print("Got frame {0:x}".format(<unsigned long>uvc_frame))
+                if status !=uvc.UVC_SUCCESS:
+                    raise StreamError(uvc_error_codes[status])
+                if uvc_frame is NULL:
+                    raise StreamError("Frame pointer is NULL")
+                #print("Got uvc frame!")
+                self._uvc_frame = uvc.uvc_allocate_frame(uvc_frame.data_bytes)
+                uvc.uvc_duplicate_frame(uvc_frame,self._uvc_frame)
+
+                packet.set_payload_ptr(<unsigned long>self._uvc_frame.data, self._uvc_frame.data_bytes)
+                dec_start = monotonic()
+                dec_frames = self.codec_context.decode(packet)
+                self.num_frames += 1
+                dec_time = monotonic() - dec_start
+                self.avg_time = (self.avg_time * (self.num_frames - 1) + dec_time) / self.num_frames
+
+                #print("Av Decode time {}".format(self.avg_time))
+                if len(dec_frames) > 0:
+                    av_frame = dec_frames.pop()
+                    #print("Av frame is {}".format(av_frame))
+                    out_frame_av = AvFrame(<unsigned long> self._uvc_frame, av_frame)
+                    #out_frame_av.attach_avframe(av_frame)
+                    out_frame_av.timestamp = uvc_frame.capture_time.tv_sec + <double>uvc_frame.capture_time.tv_usec * 1e-6
+                    #print("H264 frame!")
+                    #uvc.uvc_free_frame(self._uvc_frame)
+                    return out_frame_av
+                else:
+                    uvc.uvc_free_frame(self._uvc_frame)
+        else:
             with nogil:
                 status = uvc.uvc_stream_get_frame(self.strmh,&uvc_frame,timeout_usec)
-            if status !=uvc.UVC_SUCCESS:
+            if status != uvc.UVC_SUCCESS:
                 raise StreamError(uvc_error_codes[status])
             if uvc_frame is NULL:
                 raise StreamError("Frame pointer is NULL")
-            #print("Got uvc frame!")
-            packet.set_payload_ptr(<unsigned long>uvc_frame.data, uvc_frame.data_bytes)
-            dec_frames = self.codec_context.decode(packet)
-            if len(dec_frames) > 0:
-                av_frame = dec_frames.pop()
-                #print("Av frame is {}".format(av_frame))
-                break
+            #print("Got mjpeg frame!")
+            out_frame = TjFrame(<unsigned long>self.tj_context)
+            #print("Tj frame created")
+            #out_frame.tj_context = self.tj_context
+            out_frame.attach_uvcframe(uvc_frame = uvc_frame,copy=True)
+            header_ok = turbojpeg.tjDecompressHeader2(self.tj_context,  <unsigned char *>uvc_frame.data, uvc_frame.data_bytes, &j_width, &j_height, &jpegSubsamp)
+            #print("header_ok = {}".format(header_ok))
+            if not (header_ok >=0 and uvc_frame.width == j_width and uvc_frame.height == j_height):
+                raise StreamError("JPEG header corrupt.")
+            out_frame.timestamp = uvc_frame.capture_time.tv_sec + <double>uvc_frame.capture_time.tv_usec * 1e-6
+
+            return out_frame
+
 
 
 
@@ -707,12 +933,14 @@ cdef class Capture:
         #out_frame.tj_context = self.tj_context
         #out_frame.attach_uvcframe(uvc_frame = uvc_frame,copy=True)
         #out_frame.timestamp = uvc_frame.capture_time.tv_sec + <double>uvc_frame.capture_time.tv_usec * 1e-6
-        cdef AvFrame out_frame = AvFrame()
-        out_frame.attach_avframe(av_frame)
-        out_frame.timestamp = uvc_frame.capture_time.tv_sec + <double>uvc_frame.capture_time.tv_usec * 1e-6
+        #cdef AvFrame out_frame = AvFrame()
+        #out_frame.attach_avframe(av_frame)
 
 
-        return out_frame
+
+
+
+
 
 
     cdef _enumerate_controls(self):
@@ -767,9 +995,9 @@ cdef class Capture:
         cdef uvc.uvc_format_desc_t *format_desc
         cdef uvc.uvc_frame_desc *frame_desc
         cdef int i
+        self._available_modes = []
         while streaming_if is not NULL:
             format_desc = streaming_if.format_descs
-            self._available_modes = []
             while format_desc is not NULL:
                 print("format desc subtype = {}".format(<int>format_desc.bDescriptorSubtype))
                 frame_desc = format_desc.frame_descs
@@ -780,6 +1008,8 @@ cdef class Capture:
                         mode = {'size':(width,height),'rates':[], 'format' : _fmt_to_str(frame_desc.bDescriptorSubtype)}
                         if frame_desc.bDescriptorSubtype == uvc.UVC_VS_FRAME_FRAME_BASED:
                             print("H264 mode!")
+                        else:
+                            print("MJPEG mode!")
 
                         i = 0
                         while frame_desc.intervals[i]:
@@ -794,7 +1024,7 @@ cdef class Capture:
                 format_desc = format_desc.next
 
             streaming_if = streaming_if.next
-        logger.debug('avaible video modes: %s'%self._available_modes)
+        print('avaible video modes: %s'%self._available_modes)
 
     def __str__(self):
         return "Capture device \n\t" + "\n\t".join(('%s: %s'%(k,v) for k,v in self._info.iteritems()))
@@ -829,7 +1059,8 @@ cdef class Capture:
                     else:
                         #fist one
                         rate = m['rates'][0]
-                    mode = size + (rate,)
+
+                    mode = size + (rate,) + (m['format'],)
                     self._configure_stream(mode)
                     return
             raise ValueError("Frame size not suported.")
@@ -839,13 +1070,13 @@ cdef class Capture:
             return self._active_mode[2]
         def __set__(self,val):
             if  self._configured:
-                self.frame_mode = self._active_mode[:2]+(val,)
+                self.frame_mode = self._active_mode[:2]+(val,) + (self._active_mode[3],)
             else:
                 raise ValueError('set frame size first.')
 
     property frame_sizes:
         def __get__(self):
-            return [m['size'] for m in self._available_modes]
+            return list(set([m['size'] for m in self._available_modes]))
 
     property frame_rates:
         def __get__(self):
@@ -854,12 +1085,31 @@ cdef class Capture:
                     return m['rates']
             raise ValueError("Please set frame_size before asking for rates.")
 
+    property frame_format:
+        def __get__(self):
+            return self._active_mode[3]
+        def __set__(self,val):
+            if  self._configured:
+                self.frame_mode = self._active_mode[:3]+(val,)
+                print("Setting frame format {}".format(val))
+            else:
+                raise ValueError('set frame size first.')
+
+    property frame_formats:
+        def __get__(self):
+            formats = set()
+            for m in self._available_modes:
+                if m['size'] == self.frame_size:
+                    formats.add(m['format'])
+            print("formats = {}".format(formats))
+            return list(formats)
+
 
     property frame_mode:
         def __get__(self):
             return self._active_mode
         def __set__(self,mode):
-            logger.debug('Setting mode: %s,%s,%s'%mode)
+            logger.debug('Setting mode: %s,%s,%s,%s'%mode)
             self._configure_stream(mode)
 
     property avaible_modes:

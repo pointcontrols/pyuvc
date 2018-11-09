@@ -123,6 +123,7 @@ cdef extern from  "libuvc/libuvc.h":
         UVC_FRAME_FORMAT_SBGGR8,
         UVC_FRAME_FORMAT_H264,
         UVC_FRAME_FORMAT_COUNT
+    ctypedef uvc_frame_format uvc_frame_format_t
 
     enum:
         UVC_COLOR_FORMAT_UNKNOWN
